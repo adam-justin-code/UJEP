@@ -1,92 +1,88 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.datasets import make_blobs
 from scipy.optimize import linprog
 
-# 1. Vygenerování dat
-# Random state 42 občas prohodí barvy, proto musíme detekovat polohu dynamicky
-X, y = make_blobs(n_samples=300, centers=2, random_state=42, cluster_std=1.2)
+# --- 1. Generování dat "po celém gridu" ---
+np.random.seed(42)
+n_points = 400
 
-# Přeškálování (Výška v m, Váha v kg)
-X[:, 0] = X[:, 0] * 0.08 + 1.75  
-X[:, 1] = X[:, 1] * 10 + 130 # Posunul jsem váhu výš, aby to odpovídalo tvému obrázku
+# Náhodná výška 1.4 až 2.2 metru
+h = np.random.uniform(1.4, 2.2, n_points)
+# Náhodná váha 50 až 130 kg
+m = np.random.uniform(50, 130, n_points)
 
-# 2. Automatická detekce: Kdo je nahoře a kdo dole?
-# Spočítáme průměrnou váhu pro skupinu 0 a 1
-mean_y_0 = np.mean(X[y == 0][:, 1])
-mean_y_1 = np.mean(X[y == 1][:, 1])
+# --- 2. Vytvoření "nutné mezery" pro Hard Margin ---
+# Aby rovnice měla řešení, musíme vymazat body, které leží přesně uprostřed.
+# Definujeme si cvičnou hranici (např. váha = 100 * výška - 100)
+line_true = 100 * h - 100
+margin_safety = 5  # Velikost mezery, kterou vyčistíme
 
-# Podle vzorce: M0 musí být body POD čárou, M1 body NAD čárou (nebo naopak, podle definice phi)
-# Aby seděl vzorec z obrázku: 
-# phi >= y + delta (Line is ABOVE points -> M_bottom)
-# phi <= y - delta (Line is BELOW points -> M_top)
+# Rozdělíme body na horní a dolní a zahodíme ty, co jsou příliš blízko středu
+mask_gap = np.abs(m - line_true) > margin_safety
+h = h[mask_gap]
+m = m[mask_gap]
 
-if mean_y_0 < mean_y_1:
-    M_bottom = X[y == 0] # Skupina dole
-    M_top = X[y == 1]    # Skupina nahoře
-    label_bottom = "Skupina A (Dole)"
-    label_top = "Skupina B (Nahoře)"
-else:
-    M_bottom = X[y == 1] # Skupina dole (byla to '1', teď je to naše 'bottom')
-    M_top = X[y == 0]    # Skupina nahoře
-    label_bottom = "Skupina B (Dole)"
-    label_top = "Skupina A (Nahoře)"
+# Teď určíme, kdo je nahoře a kdo dole (pro vstup do solveru)
+# Skupina 0 (Pod čárou) a Skupina 1 (Nad čárou)
+labels = (m > line_true).astype(int)
 
-# 3. Příprava LP
-# Proměnné: [beta0, beta1, delta]
-# Cíl: Maximize delta => Minimize (-delta)
-c = [0, 0, -1] 
+X = np.column_stack((h, m))
+y = labels
 
-A_ub = [] 
+# --- 3. Matematický Solver (LP) ---
+# Data pro solver
+M_bottom = X[y == 0] # Body pod mezerou
+M_top = X[y == 1]    # Body nad mezerou
+
+c = [0, 0, -1] # Maximize delta
+A_ub = []
 b_ub = []
 
-# Nerovnice pro SPODNÍ skupinu (M_bottom):
-# Čára musí být NAD nimi: beta0 + beta1*x - delta >= y 
-# Přepis: -beta0 - beta1*x + delta <= -y
+# Nerovnice: Přímka musí být NAD spodními body
 for point in M_bottom:
     A_ub.append([-1, -point[0], 1])
     b_ub.append(-point[1])
 
-# Nerovnice pro HORNÍ skupinu (M_top):
-# Čára musí být POD nimi: beta0 + beta1*x + delta <= y
-# Přepis: beta0 + beta1*x + delta <= y
+# Nerovnice: Přímka musí být POD horními body
 for point in M_top:
     A_ub.append([1, point[0], 1])
     b_ub.append(point[1])
 
-# Meze: delta musí být kladná
-bounds = [(None, None), (None, None), (0, None)]
+# Omezení
+bounds = [(-2000, 2000), (-2000, 2000), (0, None)]
 
 # Výpočet
 res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
 
-# 4. Vykreslení
+# --- 4. Vykreslení ---
 plt.figure(figsize=(10, 7))
-
-# Vykreslení bodů (použijeme naše seřazené M_bottom a M_top)
-plt.scatter(M_bottom[:, 0], M_bottom[:, 1], color='blue', marker='x', label=label_bottom)
-plt.scatter(M_top[:, 0], M_top[:, 1], color='red', marker='x', label=label_top)
 
 if res.success:
     beta0, beta1, delta = res.x
-    print(f"Úspěch! Delta (margin) = {delta:.4f}")
     
-    # Body pro čáru
-    x_range = np.linspace(min(X[:,0]), max(X[:,0]), 100)
+    # Vykreslení čáry
+    x_range = np.linspace(1.35, 2.25, 100)
     y_line = beta0 + beta1 * x_range
     
-    # Vykreslení
-    plt.plot(x_range, y_line, color='green', linewidth=3, label='Optimální dělící přímka')
+    # Obarvení bodů podle výsledné čáry
+    # Znovu zkontrolujeme polohu bodů vůči vypočítané čáře
+    y_calc = beta0 + beta1 * X[:, 0]
+    mask_above = X[:, 1] > y_calc
+    mask_below = X[:, 1] < y_calc
     
-    # Vykreslení koridoru (marginu)
-    plt.plot(x_range, y_line - delta, '--', color='gray', alpha=0.7, label='Hranice marginu')
-    plt.plot(x_range, y_line + delta, '--', color='gray', alpha=0.7)
-    plt.fill_between(x_range, y_line - delta, y_line + delta, color='gray', alpha=0.1)
-
+    # Vykreslení bodů rozprostřených po celém gridu
+    plt.scatter(X[mask_above, 0], X[mask_above, 1], color='red', marker='x', label='Skupina Nad')
+    plt.scatter(X[mask_below, 0], X[mask_below, 1], color='blue', marker='x', label='Skupina Pod')
+    
+    # Čára a margin
+    plt.plot(x_range, y_line, color='green', linewidth=3, label='Optimální přímka')
+    plt.fill_between(x_range, y_line - delta, y_line + delta, color='green', alpha=0.1, label='Margin (Delta)')
+    
+    plt.title(f"Separace dat na celém gridu (Delta={delta:.2f})")
 else:
-    print("Řešení nenalezeno! Body se pravděpodobně prolínají.")
+    plt.scatter(X[:, 0], X[:, 1], color='gray')
+    plt.title("Řešení nenalezeno (Body se stále prolínají)")
 
-plt.title(f"Přesné rozdělení podle vzorce (Delta = {res.x[2]:.2f})")
 plt.xlabel("Výška [m]")
 plt.ylabel("Váha [kg]")
 plt.legend()
