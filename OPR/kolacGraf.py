@@ -63,6 +63,6 @@ for autotext in autotexts:
         autotext.set_color('black')
 
 plt.title(f"Rozložení portfolia\nMinimální riziko: {riziko_hodnota:.5f}", fontsize=14)
-plt.axis('equal')  # Aby byl kruh opravdu kruh
+plt.axis('equal')  
 plt.tight_layout()
 plt.show()
