@@ -3,81 +3,90 @@ import numpy as np
 from sklearn.datasets import make_blobs
 from scipy.optimize import linprog
 
-# 1. Vygenerování hustších dat (více blobů/bodů na střed)
-# Zvýšíme n_samples a zvětšíme cluster_std, aby se body k sobě přiblížily
-X, y = make_blobs(n_samples=300, centers=2, random_state=42, cluster_std=1.3)
+# 1. Vygenerování dat
+# Random state 42 občas prohodí barvy, proto musíme detekovat polohu dynamicky
+X, y = make_blobs(n_samples=300, centers=2, random_state=42, cluster_std=1.2)
 
-# Přeškálování na reálné jednotky (Výška v m, Váha v kg)
-X[:, 0] = X[:, 0] * 0.08 + 1.75  # Výška
-X[:, 1] = X[:, 1] * 10 + 80      # Váha
+# Přeškálování (Výška v m, Váha v kg)
+X[:, 0] = X[:, 0] * 0.08 + 1.75  
+X[:, 1] = X[:, 1] * 10 + 130 # Posunul jsem váhu výš, aby to odpovídalo tvému obrázku
 
-# Rozdělení na skupiny pro LP formulaci
-# Podle tvého obrázku: M0 jsou body "dole" (červené), M1 jsou body "nahoře" (modré)
-# V našem generátoru je y==1 horní shluk (Modrá), y==0 spodní (Červená)
-M0_x, M0_y = X[y == 0][:, 0], X[y == 0][:, 1]  # Skupina dole
-M1_x, M1_y = X[y == 1][:, 0], X[y == 1][:, 1]  # Skupina nahoře
+# 2. Automatická detekce: Kdo je nahoře a kdo dole?
+# Spočítáme průměrnou váhu pro skupinu 0 a 1
+mean_y_0 = np.mean(X[y == 0][:, 1])
+mean_y_1 = np.mean(X[y == 1][:, 1])
 
-# 2. Příprava Lineárního programování
-# Hledáme proměnné: [beta0, beta1, delta]
-# Funkce přímky: phi = beta0 + beta1 * x
-# Cíl: Maximalizovat delta => Minimalizovat (-delta)
+# Podle vzorce: M0 musí být body POD čárou, M1 body NAD čárou (nebo naopak, podle definice phi)
+# Aby seděl vzorec z obrázku: 
+# phi >= y + delta (Line is ABOVE points -> M_bottom)
+# phi <= y - delta (Line is BELOW points -> M_top)
+
+if mean_y_0 < mean_y_1:
+    M_bottom = X[y == 0] # Skupina dole
+    M_top = X[y == 1]    # Skupina nahoře
+    label_bottom = "Skupina A (Dole)"
+    label_top = "Skupina B (Nahoře)"
+else:
+    M_bottom = X[y == 1] # Skupina dole (byla to '1', teď je to naše 'bottom')
+    M_top = X[y == 0]    # Skupina nahoře
+    label_bottom = "Skupina B (Dole)"
+    label_top = "Skupina A (Nahoře)"
+
+# 3. Příprava LP
+# Proměnné: [beta0, beta1, delta]
+# Cíl: Maximize delta => Minimize (-delta)
 c = [0, 0, -1] 
 
-# Omezení (Constraints) podle tvého vzorce:
-# Pro M0 (dole): beta0 + beta1*x - delta >= y  --> -beta0 - beta1*x + delta <= -y
-# Pro M1 (nahoře): beta0 + beta1*x + delta <= y -->  beta0 + beta1*x + delta <= y
+A_ub = [] 
+b_ub = []
 
-A_ub = [] # Matice koeficientů nerovnic
-b_ub = [] # Pravá strana nerovnic
+# Nerovnice pro SPODNÍ skupinu (M_bottom):
+# Čára musí být NAD nimi: beta0 + beta1*x - delta >= y 
+# Přepis: -beta0 - beta1*x + delta <= -y
+for point in M_bottom:
+    A_ub.append([-1, -point[0], 1])
+    b_ub.append(-point[1])
 
-# Naplnění nerovnic pro M0 (červené body)
-for x_val, y_val in zip(M0_x, M0_y):
-    A_ub.append([-1, -x_val, 1])
-    b_ub.append(-y_val)
+# Nerovnice pro HORNÍ skupinu (M_top):
+# Čára musí být POD nimi: beta0 + beta1*x + delta <= y
+# Přepis: beta0 + beta1*x + delta <= y
+for point in M_top:
+    A_ub.append([1, point[0], 1])
+    b_ub.append(point[1])
 
-# Naplnění nerovnic pro M1 (modré body)
-for x_val, y_val in zip(M1_x, M1_y):
-    A_ub.append([1, x_val, 1])
-    b_ub.append(y_val)
-
-# Meze proměnných: beta0, beta1 jsou libovolná čísla, delta musí být >= 0
+# Meze: delta musí být kladná
 bounds = [(None, None), (None, None), (0, None)]
 
-# 3. Výpočet pomocí Simplexové metody
+# Výpočet
 res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
-
-if res.success:
-    beta0, beta1, delta = res.x
-    print(f"Nalezeno optimální řešení: delta = {delta:.4f}")
-    
-    # Vytvoření bodů pro čáru
-    x_line = np.linspace(min(X[:,0]), max(X[:,0]), 100)
-    y_line = beta0 + beta1 * x_line
-    
-    # Hranice koridoru (pro vizualizaci delty)
-    y_lower = y_line - delta # Hranice pro horní skupinu
-    y_upper = y_line + delta # Hranice pro spodní skupinu
-else:
-    print("Řešení nenalezeno (body se pravděpodobně prolínají příliš moc).")
-    beta0, beta1, delta = 0, 0, 0
-    x_line, y_line = [], []
 
 # 4. Vykreslení
 plt.figure(figsize=(10, 7))
 
-# Body
-plt.scatter(M0_x, M0_y, color='red', marker='x', label='M0 (Dolní skupina)')
-plt.scatter(M1_x, M1_y, color='blue', marker='x', label='M1 (Horní skupina)')
+# Vykreslení bodů (použijeme naše seřazené M_bottom a M_top)
+plt.scatter(M_bottom[:, 0], M_bottom[:, 1], color='blue', marker='x', label=label_bottom)
+plt.scatter(M_top[:, 0], M_top[:, 1], color='red', marker='x', label=label_top)
 
 if res.success:
-    # Střední dělící přímka
-    plt.plot(x_line, y_line, color='black', linewidth=2, label=f'Optimální přímka (delta={delta:.2f})')
-    # Zobrazení "bezpečného pásma" (margin)
-    plt.fill_between(x_line, y_lower, y_upper, color='gray', alpha=0.2, label='Margin (delta)')
-    plt.plot(x_line, y_lower, '--', color='gray', linewidth=1)
-    plt.plot(x_line, y_upper, '--', color='gray', linewidth=1)
+    beta0, beta1, delta = res.x
+    print(f"Úspěch! Delta (margin) = {delta:.4f}")
+    
+    # Body pro čáru
+    x_range = np.linspace(min(X[:,0]), max(X[:,0]), 100)
+    y_line = beta0 + beta1 * x_range
+    
+    # Vykreslení
+    plt.plot(x_range, y_line, color='green', linewidth=3, label='Optimální dělící přímka')
+    
+    # Vykreslení koridoru (marginu)
+    plt.plot(x_range, y_line - delta, '--', color='gray', alpha=0.7, label='Hranice marginu')
+    plt.plot(x_range, y_line + delta, '--', color='gray', alpha=0.7)
+    plt.fill_between(x_range, y_line - delta, y_line + delta, color='gray', alpha=0.1)
 
-plt.title("Separace pomocí Lineárního programování (Max Margin)")
+else:
+    print("Řešení nenalezeno! Body se pravděpodobně prolínají.")
+
+plt.title(f"Přesné rozdělení podle vzorce (Delta = {res.x[2]:.2f})")
 plt.xlabel("Výška [m]")
 plt.ylabel("Váha [kg]")
 plt.legend()
